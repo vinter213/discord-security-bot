@@ -1,100 +1,88 @@
-# Discord Security Bot — Render starter
+# AoS Security v2
 
-Стартовый Security Bot с базовой верификацией и HTTP health endpoint для Render.
+Discord security bot prepared for Render.
 
-## Уже работает
+## Уже есть
 
-- Discord.js v14
-- Render Web Service
-- `/health`
-- автоматическая роль `Unverified` при входе
-- `/verification-setup`
-- кнопка верификации
-- проверка возраста аккаунта (минимум 24 часа)
-- выдача `Verified`
-- снятие `Unverified`
+- Красивая верификация
+- Автоматическая роль Unverified
+- Verified после проверки
+- Проверка возраста аккаунта
+- Автоматическое уведомление в verification-канале
+- Поддержка локальной картинки `assets/verification-banner.png`
+- Anti-Spam
+- Anti-Raid
+- Anti-Nuke:
+  - массовое удаление каналов
+  - массовое удаление ролей
+  - массовые баны
+  - массовые webhook-изменения
+- Автоматическое снятие доступных ролей с нарушителя
+- `/lockdown`
+- `/panic`
 - `/security-status`
-- корректная обработка SIGTERM
+- Логи безопасности
+- Render `/health`
 
-## 1. Создай роли Discord
+## Discord Developer Portal
 
-Создай две роли:
+Bot -> Privileged Gateway Intents:
 
-- `Verified`
-- `Unverified`
+- Server Members Intent: ON
+- Message Content Intent: ON
 
-Роль бота должна находиться ВЫШЕ этих ролей.
+## Роли
 
-У `@everyone` желательно убрать доступ к основным каналам.
-Для `Unverified` оставь доступ только к каналу верификации/правил.
-Для `Verified` открой основные каналы.
+Роль AoS Security должна быть выше:
 
-## 2. Discord Developer Portal
+1. AoS Security
+2. Verified
+3. Unverified
+4. другие защищаемые роли
 
-В Bot -> Privileged Gateway Intents включи:
+Чтобы Anti-Nuke мог снимать опасные роли, роль AoS Security должна находиться выше этих ролей.
 
-- Server Members Intent
-- Message Content Intent
+## Environment Variables
 
-Для будущего расширения Anti-Raid/Anti-Spam этого будет достаточно вместе с intents в коде.
+Обязательные:
 
-## 3. Environment Variables
+- DISCORD_TOKEN
+- CLIENT_ID
+- GUILD_ID
+- VERIFIED_ROLE_ID
+- UNVERIFIED_ROLE_ID
 
-Не загружай `.env` в GitHub.
+Канал верификации уже установлен по умолчанию:
 
-На Render добавь:
+- VERIFICATION_CHANNEL_ID=1546265698412794037
 
-- `DISCORD_TOKEN`
-- `CLIENT_ID`
-- `GUILD_ID`
-- `VERIFIED_ROLE_ID`
-- `UNVERIFIED_ROLE_ID`
+Рекомендуется добавить:
 
-## 4. Локальный запуск
+- SECURITY_LOG_CHANNEL_ID
+- WHITELIST_USER_IDS
+
+`WHITELIST_USER_IDS`:
+
+```text
+111111111111111111,222222222222222222
+```
+
+Владелец сервера автоматически считается доверенным.
+
+## Картинка верификации
+
+Положить файл:
+
+```text
+assets/verification-banner.png
+```
+
+После следующего запуска AoS Security автоматически начнёт показывать его в панели и уведомлениях.
+
+## Обновление GitHub
 
 ```powershell
-Copy-Item .env.example .env
-npm install
-npm start
+git add .
+git commit -m "AoS Security v2"
+git push
 ```
-
-Заполни `.env` перед запуском.
-
-## 5. Render
-
-Создай Web Service из GitHub-репозитория.
-
-Build Command:
-
-```text
-npm install
-```
-
-Start Command:
-
-```text
-npm start
-```
-
-Health Check Path:
-
-```text
-/health
-```
-
-Render должен использовать `PORT`, который приложение уже читает автоматически.
-
-## Следующие модули
-
-- Anti-Raid
-- Anti-Nuke
-- Anti-Spam
-- Anti-Bot
-- Anti-Webhook
-- Anti-Permissions
-- Lockdown / Panic
-- Whitelist
-- Security Logs
-- Backup / Restore
-- Watchdog
-- расширенная CAPTCHA / quarantine

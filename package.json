@@ -1,8 +1,8 @@
 {
-  "name": "discord-security-bot",
-  "version": "1.0.0",
+  "name": "aos-security",
+  "version": "2.0.0",
   "private": true,
-  "description": "Discord security bot prepared for Render Web Service hosting",
+  "description": "AoS Security - Discord verification and protection bot",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"

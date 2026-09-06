@@ -1,8 +1,7 @@
 services:
   - type: web
-    name: discord-security-bot
+    name: aos-security-bot
     runtime: node
-    plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
@@ -18,4 +17,10 @@ services:
       - key: VERIFIED_ROLE_ID
         sync: false
       - key: UNVERIFIED_ROLE_ID
+        sync: false
+      - key: VERIFICATION_CHANNEL_ID
+        value: 1546265698412794037
+      - key: SECURITY_LOG_CHANNEL_ID
+        sync: false
+      - key: WHITELIST_USER_IDS
         sync: false
