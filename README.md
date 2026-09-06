@@ -86,3 +86,41 @@ git add .
 git commit -m "AoS Security v2"
 git push
 ```
+
+
+## Access Control
+
+AoS Security v3 поддерживает 4 уровня:
+
+- `OWNER` — полный доступ.
+- `SECURITY ADMIN` — управление защитой.
+- `MODERATOR` — только просмотр статуса.
+- `MEMBER` — только обычное использование и верификация.
+
+Переменные Render:
+
+```text
+OWNER_USER_ID=ID_главы
+
+SECURITY_ADMIN_ROLE_IDS=ID_роли1,ID_роли2
+
+MODERATOR_ROLE_IDS=ID_роли1,ID_роли2
+```
+
+Права команд:
+
+```text
+/security-status
+MODERATOR+
+
+/verification-setup
+SECURITY ADMIN+
+
+/lockdown
+SECURITY ADMIN+
+
+/panic
+SECURITY ADMIN+
+```
+
+Владелец Discord-сервера автоматически получает `OWNER`.

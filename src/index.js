@@ -57,6 +57,23 @@ const CONFIG = {
       .filter(Boolean)
   ),
 
+  ownerUserId:
+    process.env.OWNER_USER_ID || null,
+
+  securityAdminRoleIds: new Set(
+    (process.env.SECURITY_ADMIN_ROLE_IDS || "")
+      .split(",")
+      .map(v => v.trim())
+      .filter(Boolean)
+  ),
+
+  moderatorRoleIds: new Set(
+    (process.env.MODERATOR_ROLE_IDS || "")
+      .split(",")
+      .map(v => v.trim())
+      .filter(Boolean)
+  ),
+
   minAccountAgeHours:
     Number(process.env.MIN_ACCOUNT_AGE_HOURS || 24),
 
@@ -333,19 +350,122 @@ function registerSecurityAction(userId, actionName) {
 }
 
 // ============================================================
+// ACCESS CONTROL
+// ============================================================
+
+const AccessLevel = Object.freeze({
+  MEMBER: 0,
+  MODERATOR: 1,
+  SECURITY_ADMIN: 2,
+  OWNER: 3
+});
+
+function getAccessLevel(member) {
+  if (!member) return AccessLevel.MEMBER;
+
+  // Discord server owner always gets owner-level access.
+  if (member.id === member.guild.ownerId) {
+    return AccessLevel.OWNER;
+  }
+
+  // Optional explicit AoS owner.
+  if (
+    CONFIG.ownerUserId &&
+    member.id === CONFIG.ownerUserId
+  ) {
+    return AccessLevel.OWNER;
+  }
+
+  const roleIds = new Set(
+    member.roles.cache.map(role => role.id)
+  );
+
+  for (const roleId of CONFIG.securityAdminRoleIds) {
+    if (roleIds.has(roleId)) {
+      return AccessLevel.SECURITY_ADMIN;
+    }
+  }
+
+  for (const roleId of CONFIG.moderatorRoleIds) {
+    if (roleIds.has(roleId)) {
+      return AccessLevel.MODERATOR;
+    }
+  }
+
+  return AccessLevel.MEMBER;
+}
+
+function accessLevelName(level) {
+  switch (level) {
+    case AccessLevel.OWNER:
+      return "OWNER";
+    case AccessLevel.SECURITY_ADMIN:
+      return "SECURITY ADMIN";
+    case AccessLevel.MODERATOR:
+      return "MODERATOR";
+    default:
+      return "MEMBER";
+  }
+}
+
+async function requireAccess(
+  interaction,
+  minimumLevel
+) {
+  const member = await interaction.guild.members
+    .fetch(interaction.user.id)
+    .catch(() => null);
+
+  const level = getAccessLevel(member);
+
+  if (level >= minimumLevel) {
+    return {
+      allowed: true,
+      member,
+      level
+    };
+  }
+
+  await interaction.reply({
+    ephemeral: true,
+    embeds: [
+      errorEmbed(
+        interaction.guild,
+        [
+          "У вас нет доступа к этой команде.",
+          "",
+          `Ваш уровень: **${accessLevelName(level)}**`,
+          `Необходимый уровень: **${accessLevelName(minimumLevel)}**`
+        ].join("\\n")
+      )
+    ]
+  }).catch(() => {});
+
+  await securityLog(
+    interaction.guild,
+    "Отказ в доступе",
+    `<@${interaction.user.id}> попытался использовать команду \`/${interaction.commandName}\` без нужного уровня доступа.`
+  );
+
+  return {
+    allowed: false,
+    member,
+    level
+  };
+}
+
+// ============================================================
 // COMMANDS
 // ============================================================
 
 const commands = [
   new SlashCommandBuilder()
     .setName("verification-setup")
-    .setDescription("Создать красивую панель верификации")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    .setDescription("Создать красивую панель верификации"),
 
   new SlashCommandBuilder()
     .setName("security-status")
-    .setDescription("Состояние AoS Security")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+    .setDescription("Состояние AoS Security"),
 
   new SlashCommandBuilder()
     .setName("lockdown")
@@ -360,12 +480,11 @@ const commands = [
           { name: "OFF", value: "off" }
         )
     )
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    ,
 
   new SlashCommandBuilder()
     .setName("panic")
     .setDescription("Экстренно закрыть сервер")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(command => command.toJSON());
 
 async function registerCommands() {
@@ -738,6 +857,13 @@ client.on("interactionCreate", async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "verification-setup") {
+        const access = await requireAccess(
+          interaction,
+          AccessLevel.SECURITY_ADMIN
+        );
+
+        if (!access.allowed) return;
+
         const payload = {
           embeds: [verificationEmbed(interaction.guild)],
           components: [verificationButtons()]
@@ -762,6 +888,13 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.commandName === "security-status") {
+        const access = await requireAccess(
+          interaction,
+          AccessLevel.MODERATOR
+        );
+
+        if (!access.allowed) return;
+
         const verifiedRole =
           interaction.guild.roles.cache.get(
             CONFIG.verifiedRoleId
@@ -785,6 +918,7 @@ client.on("interactionCreate", async interaction => {
                   `Anti-Raid: **ENABLED ✅**`,
                   `Anti-Nuke: **ENABLED ✅**`,
                   `Raid Mode: **${Date.now() < raidModeUntil ? "ACTIVE 🚨" : "NORMAL ✅"}**`,
+                  `Ваш уровень доступа: **${accessLevelName(access.level)}**`,
                   "",
                   `Verified role: ${verifiedRole ? "✅" : "❌"}`,
                   `Unverified role: ${unverifiedRole ? "✅" : "❌"}`
@@ -797,6 +931,13 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.commandName === "lockdown") {
+        const access = await requireAccess(
+          interaction,
+          AccessLevel.SECURITY_ADMIN
+        );
+
+        if (!access.allowed) return;
+
         const mode = interaction.options.getString(
           "mode",
           true
@@ -828,6 +969,13 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (interaction.commandName === "panic") {
+        const access = await requireAccess(
+          interaction,
+          AccessLevel.SECURITY_ADMIN
+        );
+
+        if (!access.allowed) return;
+
         await interaction.deferReply({
           ephemeral: true
         });

@@ -24,3 +24,9 @@ services:
         sync: false
       - key: WHITELIST_USER_IDS
         sync: false
+      - key: OWNER_USER_ID
+        sync: false
+      - key: SECURITY_ADMIN_ROLE_IDS
+        sync: false
+      - key: MODERATOR_ROLE_IDS
+        sync: false
