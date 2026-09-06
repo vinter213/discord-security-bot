@@ -60,6 +60,13 @@ const CONFIG = {
   ownerUserId:
     process.env.OWNER_USER_ID || null,
 
+  ownerRoleIds: new Set(
+    (process.env.OWNER_ROLE_IDS || "")
+      .split(",")
+      .map(v => v.trim())
+      .filter(Boolean)
+  ),
+
   securityAdminRoleIds: new Set(
     (process.env.SECURITY_ADMIN_ROLE_IDS || "")
       .split(",")
@@ -379,6 +386,12 @@ function getAccessLevel(member) {
   const roleIds = new Set(
     member.roles.cache.map(role => role.id)
   );
+
+  for (const roleId of CONFIG.ownerRoleIds) {
+    if (roleIds.has(roleId)) {
+      return AccessLevel.OWNER;
+    }
+  }
 
   for (const roleId of CONFIG.securityAdminRoleIds) {
     if (roleIds.has(roleId)) {

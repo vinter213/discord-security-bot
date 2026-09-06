@@ -124,3 +124,22 @@ SECURITY ADMIN+
 ```
 
 Владелец Discord-сервера автоматически получает `OWNER`.
+
+
+## AoS role mapping
+
+Configured role hierarchy:
+
+```text
+OWNER_ROLE_IDS=1439983777194705029,1440026916122919024
+```
+
+- Создатель
+- Создатель №2
+
+```text
+SECURITY_ADMIN_ROLE_IDS=1490425356728139927,1438556606630592533
+```
+
+- Заместитель Создателя
+- Гл.Админ
