@@ -3,6 +3,8 @@ require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
+const { createAntiSpam } = require("./anti-spam");
+const VERSION = require("../package.json").version;
 
 const {
   Client,
@@ -125,7 +127,7 @@ let raidModeUntil = 0;
 app.get("/", (_req, res) => {
   res.status(200).json({
     service: "AoS Security",
-    version: "2.0.0",
+    version: VERSION,
     discord: discordReady ? "online" : "starting",
     raidMode: Date.now() < raidModeUntil
   });
@@ -141,6 +143,7 @@ app.get("/health", (_req, res) => {
 
   return res.status(200).json({
     ok: true,
+    version: VERSION,
     discord: "ready",
     raidMode: Date.now() < raidModeUntil
   });
@@ -278,8 +281,11 @@ async function securityLog(guild, title, description) {
   if (!channel || !channel.isTextBased()) return;
 
   await channel.send({
-    embeds: [alertEmbed(guild, title, description)]
-  }).catch(() => {});
+    embeds: [alertEmbed(guild, title, description)],
+    allowedMentions: { parse: [] }
+  }).catch(error => {
+    console.error(`[SECURITY LOG] Не удалось отправить лог: код ${error.code || error.status || "unknown"}`);
+  });
 }
 
 // ============================================================
@@ -288,6 +294,7 @@ async function securityLog(guild, title, description) {
 
 function isTrusted(guild, userId) {
   if (!userId) return true;
+  if (userId === client.user?.id) return true;
   if (userId === guild.ownerId) return true;
   return CONFIG.whitelist.has(userId);
 }
@@ -332,7 +339,6 @@ async function neutralizeExecutor(guild, executorId, reason) {
 // ============================================================
 
 const joinTimestamps = [];
-const spamMap = new Map();
 const actionMap = new Map();
 
 function prune(list, windowMs) {
@@ -665,58 +671,13 @@ client.on("guildMemberAdd", async member => {
 // ANTI-SPAM
 // ============================================================
 
-client.on("messageCreate", async message => {
-  if (!message.guild) return;
-  if (message.guild.id !== CONFIG.guildId) return;
-  if (message.author.bot) return;
-
-  const member = message.member;
-  if (!member) return;
-
-  if (
-    isTrusted(message.guild, message.author.id) ||
-    member.permissions.has(PermissionFlagsBits.Administrator)
-  ) {
-    return;
-  }
-
-  const now = Date.now();
-
-  if (!spamMap.has(message.author.id)) {
-    spamMap.set(message.author.id, []);
-  }
-
-  const list = spamMap.get(message.author.id);
-  list.push(now);
-  prune(list, CONFIG.spamWindowMs);
-
-  const mentionCount =
-    message.mentions.users.size +
-    message.mentions.roles.size;
-
-  const spamTriggered =
-    list.length >= CONFIG.spamMessageLimit ||
-    mentionCount >= 6;
-
-  if (!spamTriggered) return;
-
-  await message.delete().catch(() => {});
-
-  if (member.moderatable) {
-    await member.timeout(
-      CONFIG.spamTimeoutMs,
-      "AoS Security Anti-Spam"
-    ).catch(() => {});
-  }
-
-  spamMap.set(message.author.id, []);
-
-  await securityLog(
-    message.guild,
-    "Anti-Spam",
-    `<@${message.author.id}> превысил лимит сообщений/упоминаний и получил временную блокировку.`
-  );
+const antiSpam = createAntiSpam({
+  client,
+  config: CONFIG,
+  isTrusted,
+  log: securityLog
 });
+client.on("messageCreate", antiSpam);
 
 // ============================================================
 // ANTI-NUKE HELPERS
@@ -922,12 +883,16 @@ client.on("interactionCreate", async interaction => {
           ephemeral: true,
           embeds: [
             baseEmbed(interaction.guild)
-              .setTitle("🛡️ AoS Security Status")
+              .setTitle(`🛡️ AoS Security ${VERSION}`)
               .setDescription(
                 [
                   `Discord: **${discordReady ? "ONLINE ✅" : "OFFLINE ❌"}**`,
                   `Verification: **ENABLED ✅**`,
-                  `Anti-Spam: **ENABLED ✅**`,
+                  `Anti-Spam: **люди / боты / входящие вебхуки ✅**`,
+                  `Лимит: **${CONFIG.spamMessageLimit} сообщений за ${CONFIG.spamWindowMs / 1000} сек.**`,
+                  `Бан ботов: ${interaction.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers) ? "✅ право есть; учитывается порядок ролей" : "❌ нет права Банить участников"}`,
+                  `Удаление в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageMessages) ? "✅" : "❌"}`,
+                  `Вебхуки в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageWebhooks) ? "✅" : "❌"}`,
                   `Anti-Raid: **ENABLED ✅**`,
                   `Anti-Nuke: **ENABLED ✅**`,
                   `Raid Mode: **${Date.now() < raidModeUntil ? "ACTIVE 🚨" : "NORMAL ✅"}**`,
@@ -1162,6 +1127,7 @@ async function shutdown(signal) {
   );
 
   discordReady = false;
+  antiSpam.dispose();
 
   try {
     client.destroy();

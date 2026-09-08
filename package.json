@@ -1,11 +1,12 @@
 {
   "name": "aos-security",
-  "version": "2.0.0",
+  "version": "3.2.0",
   "private": true,
   "description": "AoS Security - Discord verification and protection bot",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
