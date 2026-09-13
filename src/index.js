@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const { createAntiSpam } = require("./anti-spam");
+const { buildPollCommands, createPollHandler } = require("./polls");
 const VERSION = require("../package.json").version;
 
 const {
@@ -503,7 +504,9 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("panic")
-    .setDescription("Экстренно закрыть сервер")
+    .setDescription("Экстренно закрыть сервер"),
+
+  ...buildPollCommands()
 ].map(command => command.toJSON());
 
 async function registerCommands() {
@@ -827,8 +830,12 @@ client.on("webhooksUpdate", async channel => {
 // INTERACTIONS
 // ============================================================
 
+const handlePoll = createPollHandler({ guildId: CONFIG.guildId });
+
 client.on("interactionCreate", async interaction => {
   try {
+    if (await handlePoll(interaction)) return;
+
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "verification-setup") {
         const access = await requireAccess(
@@ -893,6 +900,9 @@ client.on("interactionCreate", async interaction => {
                   `Бан ботов: ${interaction.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers) ? "✅ право есть; учитывается порядок ролей" : "❌ нет права Банить участников"}`,
                   `Удаление в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageMessages) ? "✅" : "❌"}`,
                   `Вебхуки в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageWebhooks) ? "✅" : "❌"}`,
+                  `Голосования: **/poll и /poll-photo**`,
+                  `Создание опросов в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.SendPolls) ? "✅" : "❌"}`,
+                  `Фото в опросах: ${interaction.appPermissions?.has([PermissionFlagsBits.AttachFiles, PermissionFlagsBits.EmbedLinks]) ? "✅" : "❌ нужны Прикреплять файлы и Встраивать ссылки"}`,
                   `Anti-Raid: **ENABLED ✅**`,
                   `Anti-Nuke: **ENABLED ✅**`,
                   `Raid Mode: **${Date.now() < raidModeUntil ? "ACTIVE 🚨" : "NORMAL ✅"}**`,
