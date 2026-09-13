@@ -5,7 +5,10 @@ const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 const discord = require("discord.js");
 const { Client, MessagePayload, PermissionsBitField, PermissionFlagsBits: P, ChannelType, MessageFlags } = discord;
-const { buildPollCommands, buildPollPayload, createPollHandler } = require("../src/polls");
+const { buildPollCommands, buildPollPayload, resolvePollMessage, createPollHandler } = require("../src/polls");
+
+const transportClient = new Client({ intents: [] });
+test.after(() => transportClient.destroy());
 
 const guildId = "111111111111111111";
 const defaults = { вопрос: "Когда играем?", варианты: "Сегодня | Завтра" };
@@ -22,7 +25,7 @@ function attachment(overrides = {}) {
 
 function interaction(values = {}, commandName = "poll") {
   const options = { ...defaults, ...values };
-  const calls = { replies: [], edits: [], sent: [], events: [] };
+  const calls = { replies: [], edits: [], sent: [], events: [], messages: [] };
   const result = {
     id: String(155555555555555555n + BigInt(++sequence)), guildId,
     channelId: "222222222222222222", user: { id: "333333333333333333", bot: false },
@@ -34,10 +37,18 @@ function interaction(values = {}, commandName = "poll") {
     deferReply: async payload => { calls.events.push("defer"); calls.deferred = payload; },
     editReply: async payload => { calls.edits.push(payload); },
     channel: {
+      client: transportClient,
       type: ChannelType.GuildText, isThread: () => false,
       send: async payload => {
         calls.events.push("send"); calls.sent.push(payload);
-        return { url: "https://discord.com/channels/111/222/444" };
+        const message = {
+          url: `https://discord.com/channels/111/222/${444 + calls.messages.length}`,
+          edits: [], deleted: false,
+          async edit(value) { this.edits.push(value); },
+          async delete() { this.deleted = true; }
+        };
+        calls.messages.push(message);
+        return message;
       }
     }, calls
   };
@@ -62,11 +73,19 @@ test("slash command registration uses valid required attachment and text options
 test("text poll serializes to Discord API format without enabling mentions", () => {
   const input = interaction({ вопрос: " @everyone Когда? ", варианты: " Сейчас | Потом ", часы: 3, мультивыбор: true });
   const client = new Client({ intents: [] });
-  const { body } = new MessagePayload({ client }, buildPollPayload(input)).resolveBody();
+  const { body } = resolvePollMessage({ client }, buildPollPayload(input));
   assert.equal(body.poll.question.text, "@everyone Когда?");
   assert.deepEqual(body.poll.answers.map(answer => answer.poll_media.text), ["Сейчас", "Потом"]);
   assert.equal(body.poll.duration, 3);
   assert.equal(body.poll.allow_multiselect, true);
+  assert.equal(body.poll.layout_type, 1);
+  const wire = JSON.parse(JSON.stringify(body));
+  for (const answer of wire.poll.answers) {
+    assert.deepEqual(Object.keys(answer.poll_media), ["text"]);
+  }
+  assert.ok(!("content" in wire));
+  assert.ok(!("embeds" in wire));
+  assert.ok(!("attachments" in wire));
   assert.deepEqual(body.allowed_mentions.parse, []);
   assert.equal(body.nonce, input.id);
   assert.equal(body.enforce_nonce, true);
@@ -88,11 +107,19 @@ test("rejects invalid question, duplicate or empty answers and out-of-range dura
 
 test("photos are re-uploaded with distinct filenames and match numbered poll answers", async () => {
   const input = interaction({ фото1: attachment(), фото2: attachment(), подпись1: "Красная форма" }, "poll-photo");
-  const payload = buildPollPayload(input);
+  await createPollHandler({ guildId })(input);
+  assert.equal(input.calls.sent.length, 2);
+  const [payload, pollRequest] = input.calls.sent;
+  assert.ok(!("poll" in payload), "gallery request must not contain a poll");
+  assert.ok(pollRequest instanceof MessagePayload);
+  assert.equal(pollRequest.options.files, undefined);
+  assert.equal(pollRequest.options.embeds, undefined);
+  assert.equal(pollRequest.options.content, undefined);
+  assert.notEqual(payload.nonce, pollRequest.options.nonce);
   assert.equal(payload.files[0].attachment, attachment().url);
   assert.notEqual(payload.files[0].name, payload.files[1].name);
-  assert.equal(payload.poll.answers[0].text, "1. Красная форма");
-  assert.equal(payload.poll.answers[1].text, "Фото 2");
+  assert.equal(pollRequest.body.poll.answers[0].poll_media.text, "1. Красная форма");
+  assert.equal(pollRequest.body.poll.answers[1].poll_media.text, "Фото 2");
   const client = new Client({ intents: [] });
   // Resolve multipart data locally; no Discord request or CDN download.
   for (const file of payload.files) file.attachment = Buffer.from("local-test-image");
@@ -100,10 +127,12 @@ test("photos are re-uploaded with distinct filenames and match numbered poll ans
   await message.resolveFiles();
   for (let i = 0; i < 2; i++) {
     assert.equal(message.body.embeds[i].image.url, `attachment://${message.files[i].name}`);
-    assert.equal(message.body.embeds[i].title, message.body.poll.answers[i].poll_media.text);
-    assert.equal(message.body.attachments[i].description, message.body.poll.answers[i].poll_media.text);
+    assert.equal(message.body.embeds[i].title, pollRequest.body.poll.answers[i].poll_media.text);
+    assert.equal(message.body.attachments[i].description, pollRequest.body.poll.answers[i].poll_media.text);
   }
-  assert.equal(message.body.poll.allow_multiselect, false);
+  assert.equal(pollRequest.body.poll.allow_multiselect, false);
+  assert.ok(input.calls.messages[0].edits[0].content.includes(input.calls.messages[1].url));
+  assert.equal(input.calls.messages[1].edits.length, 0, "native poll must never be edited");
   client.destroy();
 });
 
@@ -236,6 +265,95 @@ test("failed private confirmation never re-sends a created poll", async () => {
   assert.equal(await createPollHandler({ guildId, logError: line => logs.push(line) })(input), true);
   assert.equal(input.calls.sent.length, 1);
   assert.match(logs[0], /Confirmation failed/);
+});
+
+test("50035 reports field paths and validation codes without request data", async () => {
+  const input = interaction();
+  input.channel.send = async () => {
+    throw {
+      code: 50035, status: 400,
+      requestBody: { token: "private-secret" },
+      rawError: { errors: {
+        poll: { answers: { 0: { poll_media: { emoji: {
+          _errors: [{ code: "BASE_TYPE_REQUIRED", message: "private-secret" }]
+        } } } } },
+        "private-secret": { _errors: [{ code: "TOKEN_DATA" }] }
+      } }
+    };
+  };
+  const logs = [];
+  await createPollHandler({ guildId, logError: line => logs.push(line) })(input);
+  assert.match(input.calls.edits[0].content, /poll\.answers\.0\.poll_media\.emoji: BASE_TYPE_REQUIRED/);
+  assert.match(logs[0], /command=\/poll stage=poll code=50035/);
+  assert.ok(!JSON.stringify([logs, input.calls.edits]).includes("private-secret"));
+});
+
+test("normalization survives discord.js resolving an already-resolved payload", async () => {
+  const input = interaction();
+  await createPollHandler({ guildId })(input);
+  const request = input.calls.sent[0];
+  request.resolveBody();
+  await request.resolveFiles();
+  const body = JSON.parse(JSON.stringify(request.body));
+  assert.equal(body.poll.layout_type, 1);
+  assert.deepEqual(body.poll.answers, [{ poll_media: { text: "Сегодня" } }, { poll_media: { text: "Завтра" } }]);
+  assert.equal(request.files.length, 0);
+});
+
+test("failed gallery upload stops creation and identifies the photo stage", async () => {
+  const input = interaction({ фото1: attachment(), фото2: attachment() }, "poll-photo");
+  let attempts = 0;
+  input.channel.send = async () => { attempts++; throw { code: 50035, status: 400 }; };
+  const logs = [];
+  await createPollHandler({ guildId, logError: line => logs.push(line) })(input);
+  assert.equal(attempts, 1);
+  assert.match(logs[0], /command=\/poll-photo stage=photos code=50035/);
+  assert.match(input.calls.edits[0].content, /фотографий/);
+});
+
+test("confirmed poll rejection removes only the gallery just created", async () => {
+  const input = interaction({ фото1: attachment(), фото2: attachment() }, "poll-photo");
+  const send = input.channel.send;
+  let attempts = 0;
+  input.channel.send = async payload => {
+    attempts++;
+    if (payload instanceof MessagePayload) throw { code: 50035, status: 400 };
+    return send(payload);
+  };
+  await createPollHandler({ guildId, logError() {} })(input);
+  assert.equal(attempts, 2);
+  assert.equal(input.calls.messages.length, 1);
+  assert.equal(input.calls.messages[0].deleted, true);
+  assert.doesNotMatch(input.calls.edits[0].content, /✅/);
+});
+
+test("uncertain poll send keeps photos and never retries a potentially created poll", async () => {
+  const input = interaction({ фото1: attachment(), фото2: attachment() }, "poll-photo");
+  const send = input.channel.send;
+  let pollAttempts = 0;
+  input.channel.send = async payload => {
+    if (payload instanceof MessagePayload) { pollAttempts++; throw { code: "ECONNRESET" }; }
+    return send(payload);
+  };
+  await createPollHandler({ guildId, logError() {} })(input);
+  assert.equal(pollAttempts, 1);
+  assert.equal(input.calls.messages[0].deleted, false);
+  assert.match(input.calls.edits[0].content, /Проверьте канал/);
+});
+
+test("failed gallery link edit does not hide or duplicate the successful poll", async () => {
+  const input = interaction({ фото1: attachment(), фото2: attachment() }, "poll-photo");
+  const send = input.channel.send;
+  input.channel.send = async payload => {
+    const message = await send(payload);
+    if (!(payload instanceof MessagePayload)) message.edit = async () => { throw { code: 50013 }; };
+    return message;
+  };
+  const logs = [];
+  await createPollHandler({ guildId, logError: line => logs.push(line) })(input);
+  assert.equal(input.calls.sent.length, 2);
+  assert.match(input.calls.edits[0].content, /✅/);
+  assert.match(logs[0], /Gallery link failed/);
 });
 
 test("application startup registers all six commands and routes polls through the real integration", async () => {

@@ -3,6 +3,8 @@ const {
   PermissionFlagsBits,
   ChannelType,
   MessageFlags,
+  MessagePayload,
+  PollLayoutType,
   EmbedBuilder
 } = require("discord.js");
 
@@ -97,10 +99,9 @@ function buildPollPayload(interaction) {
     throw new PollInputError("Срок голосования: целое число от 1 до 768 часов.");
   }
   const payload = {
-    content: `📊 Голосование от <@${interaction.user.id}>. ${allowMultiselect ? "Можно выбрать несколько вариантов." : "Выберите один вариант."}`,
     allowedMentions: { parse: [] },
     // Discord stores votes and expiry, including while AoS is offline.
-    poll: { question: { text: question }, answers: [], duration, allowMultiselect },
+    poll: { question: { text: question }, answers: [], duration, allowMultiselect, layoutType: PollLayoutType.Default },
     nonce: interaction.id,
     enforceNonce: true
   };
@@ -148,8 +149,74 @@ function buildPollPayload(interaction) {
     payload.embeds.push(new EmbedBuilder()
       .setColor(0x00D7FF).setTitle(label).setImage(`attachment://${file.name}`));
   }
-  payload.content += " Номер варианта соответствует подписи фотографии.";
   return payload;
+}
+
+function resolvePollMessage(channel, payload) {
+  // Keep native poll creation separate from the photo gallery and its attachments.
+  const { files, embeds, content, ...options } = payload;
+  const message = MessagePayload.create(channel, options).resolveBody();
+  // discord.js 14.x can serialize an absent emoji as null. Omit optional objects
+  // rather than relying on Discord to accept a value outside the request schema.
+  for (const answer of message.body.poll.answers) {
+    if (answer.poll_media.emoji == null) delete answer.poll_media.emoji;
+  }
+  return message;
+}
+
+function safeErrorCode(value) {
+  const code = String(value ?? "unknown");
+  return /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : "unknown";
+}
+
+function validationFields(error) {
+  const fields = [];
+  const roots = new Set(["poll", "content", "embeds", "attachments", "files", "nonce", "enforce_nonce", "allowed_mentions", "flags", "tts", "components"]);
+  function visit(node, path, depth) {
+    if (!node || typeof node !== "object" || depth > 8 || fields.length >= 8) return;
+    if (Array.isArray(node._errors)) {
+      for (const issue of node._errors.slice(0, 8 - fields.length)) {
+        fields.push(`${path || "request"}: ${safeErrorCode(issue?.code)}`);
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "_errors" || !/^[a-zA-Z0-9_]{1,40}$/.test(key) || (!path && !roots.has(key))) continue;
+      visit(value, path ? `${path}.${key}` : key, depth + 1);
+    }
+  }
+  // Field names and validation codes only: never log request bodies or token URLs.
+  visit(error?.rawError?.errors, "", 0);
+  return fields;
+}
+
+function describePollFailure(error, commandName, stage) {
+  const code = safeErrorCode(error?.code || error?.status || error?.name);
+  const fields = validationFields(error);
+  const item = stage === "photos" ? "фотографий" : "опроса";
+  let text;
+  if (code === "50035") {
+    text = `Discord отклонил параметры ${item} (код 50035).`;
+  } else if (["50001", "50013"].includes(code)) {
+    text = `Discord запретил отправку ${item}: проверьте права AoS Security в этом канале (код ${code}).`;
+  } else if (code === "520002") {
+    text = "Discord не поддерживает опросы в этом канале (код 520002). Используйте обычный текстовый канал.";
+  } else if (["40005", "413"].includes(code)) {
+    text = `Discord отклонил размер фотографий (код ${code}). Уменьшите файлы.`;
+  } else {
+    text = `Не удалось подтвердить отправку ${item} (код ${code}). Проверьте канал перед повтором.`;
+  }
+  if (fields.length) text += `\nПоля: ${fields.join("; ").slice(0, 1200)}`;
+  if (code === "50035") text += "\nПришлите это сообщение целиком — в нём указан отказ Discord.";
+  return {
+    text,
+    log: `[POLLS] Create failed: command=/${commandName} stage=${stage} code=${code}${fields.length ? ` fields=${fields.join("; ")}` : ""}`
+  };
+}
+
+function isRejectedRequest(error) {
+  const status = Number(error?.status);
+  return (status >= 400 && status < 500 && ![408, 429].includes(status)) ||
+    [50035, 50001, 50013, 520002, 40005].includes(Number(error?.code));
 }
 
 function createPollHandler({ guildId, now = Date.now, logError = console.error }) {
@@ -206,16 +273,41 @@ function createPollHandler({ guildId, now = Date.now, logError = console.error }
     cooldowns.set(channelKey, time + 10_000);
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let message;
+    let gallery;
+    let stage = photo ? "photos" : "poll";
+    const galleryContent = `📷 ${payload.poll.question.text}\nАвтор: <@${interaction.user.id}>. Номера фотографий соответствуют вариантам опроса.`;
     try {
-      message = await channel.send(payload);
+      if (photo) {
+        gallery = await channel.send({
+          content: galleryContent,
+          files: payload.files,
+          embeds: payload.embeds,
+          allowedMentions: { parse: [] },
+          nonce: `g${interaction.id}`,
+          enforceNonce: true
+        });
+      }
+      stage = "poll";
+      message = await channel.send(resolvePollMessage(channel, payload));
     } catch (error) {
-      // No raw API request objects: they may include attachment links and auth details.
-      logError(`[POLLS] Create failed: code ${error.code || error.status || "unknown"}`);
-      const text = [50001, 50013].includes(Number(error.code))
-        ? "Не удалось отправить голосование: проверьте права AoS Security в этом канале."
-        : "Discord не подтвердил создание голосования. Проверьте канал перед повтором; если опроса нет, попробуйте через минуту.";
-      await interaction.editReply({ content: text, allowedMentions: { parse: [] } });
+      const failure = describePollFailure(error, interaction.commandName, stage);
+      logError(failure.log);
+      // A confirmed rejection created no poll, so remove only our new gallery.
+      // After a network error the poll may exist: retain its photos and do not retry.
+      if (gallery && isRejectedRequest(error)) {
+        await gallery.delete().catch(cleanupError => {
+          logError(`[POLLS] Gallery cleanup failed: code=${safeErrorCode(cleanupError?.code)}`);
+        });
+      }
+      await interaction.editReply({ content: failure.text, allowedMentions: { parse: [] } });
       return true;
+    }
+    if (gallery) {
+      // Edit only the regular photo message. A native poll cannot be edited.
+      await gallery.edit({
+        content: `${galleryContent}\n🗳️ Голосовать: ${message.url}`,
+        allowedMentions: { parse: [] }
+      }).catch(error => logError(`[POLLS] Gallery link failed: code=${safeErrorCode(error?.code)}`));
     }
     // A failed private acknowledgement must not cause a second public poll.
     await interaction.editReply({
@@ -226,4 +318,4 @@ function createPollHandler({ guildId, now = Date.now, logError = console.error }
   };
 }
 
-module.exports = { buildPollCommands, buildPollPayload, createPollHandler };
+module.exports = { buildPollCommands, buildPollPayload, resolvePollMessage, createPollHandler };

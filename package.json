@@ -1,6 +1,6 @@
 {
   "name": "aos-security",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "private": true,
   "description": "AoS Security - Discord verification and protection bot",
   "main": "src/index.js",
