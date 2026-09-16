@@ -24,6 +24,11 @@ class FakeSlashCommandBuilder {
     this.data.options.push(option.data);
     return this;
   }
+  addStringOption(callback) {
+    const option = callback(new FakeChannelOption());
+    this.data.options.push(option.data);
+    return this;
+  }
   toJSON() { return structuredClone(this.data); }
 }
 

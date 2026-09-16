@@ -1,5 +1,30 @@
 const { setChannelMute, hasSecurityAdminAccess } = require('./channel-mute');
 
+
+function parseMuteDuration(value) {
+  if (value == null || String(value).trim() === '') return null;
+
+  const input = String(value).trim().toLowerCase().replace(/\s+/g, '');
+  const match = input.match(/^(\d+)(мин|m|ч|h|д|d)$/u);
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  if (!Number.isInteger(amount) || amount <= 0) return null;
+
+  const unit = match[2];
+  const multiplier = unit === 'мин' || unit === 'm'
+    ? 60 * 1000
+    : unit === 'ч' || unit === 'h'
+      ? 60 * 60 * 1000
+      : 24 * 60 * 60 * 1000;
+
+  const durationMs = amount * multiplier;
+  const maxDurationMs = 24 * 24 * 60 * 60 * 1000;
+  return durationMs <= maxDurationMs ? durationMs : null;
+}
+
+const muteTimers = new Map();
+
 async function handleChannelMuteInteraction(interaction, options) {
   if (!interaction?.guild) return false;
   if (interaction.commandName !== 'mutechat' && interaction.commandName !== 'unmutechat') {
@@ -31,9 +56,22 @@ async function handleChannelMuteInteraction(interaction, options) {
     return true;
   }
 
+  const enabled = interaction.commandName === 'mutechat';
+  const durationInput = enabled && typeof interaction.options.getString === 'function'
+    ? interaction.options.getString('time')
+    : null;
+  const durationMs = durationInput ? parseMuteDuration(durationInput) : null;
+
+  if (enabled && durationInput && durationMs == null) {
+    await interaction.reply({
+      content: '❌ Неверное время. Примеры: 10мин, 30m, 1ч, 2h, 1д, 7d. Максимум — 24 дня.',
+      ephemeral: true
+    }).catch(() => {});
+    return true;
+  }
+
   await interaction.deferReply({ ephemeral: true });
 
-  const enabled = interaction.commandName === 'mutechat';
   const reason = `AoS Security: /${interaction.commandName} by ${interaction.user.id}`;
 
   try {
@@ -44,15 +82,51 @@ async function handleChannelMuteInteraction(interaction, options) {
       reason
     );
 
+    const timerMap = options.timerMap || muteTimers;
+    const setTimer = options.setTimer || setTimeout;
+    const clearTimer = options.clearTimer || clearTimeout;
+    const existingTimer = timerMap.get(target.id);
+
+    if (existingTimer) {
+      clearTimer(existingTimer);
+      timerMap.delete(target.id);
+    }
+
+    if (enabled && durationMs != null) {
+      const timer = setTimer(async () => {
+        try {
+          await setChannelMute(
+            target,
+            interaction.guild.roles.everyone,
+            false,
+            `AoS Security: automatic unmute after ${durationInput}`
+          );
+          timerMap.delete(target.id);
+          await options.securityLog(
+            interaction.guild,
+            'AUTO-UNMUTECHAT',
+            `${target} автоматически открыт после **${durationInput}**.`
+          );
+        } catch (error) {
+          console.error('[CHANNEL MUTE AUTO-UNMUTE]', error);
+          timerMap.delete(target.id);
+        }
+      }, durationMs);
+      timerMap.set(target.id, timer);
+      if (typeof timer?.unref === 'function') timer.unref();
+    }
+
     await options.securityLog(
       interaction.guild,
       enabled ? 'MUTECHAT' : 'UNMUTECHAT',
-      `<@${interaction.user.id}> ${enabled ? 'закрыл' : 'открыл'} ${target}.`
+      `<@${interaction.user.id}> ${enabled ? 'закрыл' : 'открыл'} ${target}${enabled && durationInput ? ` на **${durationInput}**` : ''}.`
     );
 
     await interaction.editReply(
       enabled
-        ? `🔒 Чат ${target} замучен.`
+        ? durationInput
+          ? `🔒 Чат ${target} замучен на **${durationInput}**.`
+          : `🔒 Чат ${target} замучен бессрочно.`
         : `🔓 Чат ${target} снова открыт.`
     );
   } catch (error) {
@@ -114,6 +188,12 @@ function installChannelMutePlugin(discord, env = process.env) {
             ChannelType.GuildAnnouncement,
             ChannelType.GuildForum
           )
+      )
+      .addStringOption(option =>
+        option
+          .setName('time')
+          .setDescription('Время мута: 10мин, 30m, 1ч, 2h, 1д; пусто = бессрочно')
+          .setRequired(false)
       ),
     new SlashCommandBuilder()
       .setName('unmutechat')
@@ -190,7 +270,8 @@ function installChannelMutePlugin(discord, env = process.env) {
           handleChannelMuteInteraction(interaction, {
             config,
             supportedChannelTypes,
-            securityLog
+            securityLog,
+            timerMap: muteTimers
           }).catch(error => {
             console.error('[CHANNEL MUTE INTERACTION]', error);
           });
@@ -207,5 +288,6 @@ function installChannelMutePlugin(discord, env = process.env) {
 
 module.exports = {
   installChannelMutePlugin,
-  handleChannelMuteInteraction
+  handleChannelMuteInteraction,
+  parseMuteDuration
 };
