@@ -11,13 +11,19 @@ function fixture(t, options = {}) {
     user: { id: "sender", bot: options.bot ?? true },
     permissions: { has: permission => permission === "Administrator" && !!options.admin },
     moderatable: options.moderatable ?? !options.admin,
+    bannable: options.bannable ?? true,
+    kickable: options.kickable ?? false,
     async timeout(ms, reason) {
       calls.timeouts.push({ ms, reason });
       if (options.timeoutWait) await options.timeoutWait;
       if (options.timeoutError) throw options.timeoutError;
     },
-    async ban() { calls.bans.push(true); },
-    async kick() { calls.kicks.push(true); }
+    async ban(args) {
+      calls.bans.push(args);
+      if (options.banWait) await options.banWait;
+      if (options.banError) throw options.banError;
+    },
+    async kick() { calls.kicks.push(true); if (options.kickError) throw options.kickError; }
   };
   const guild = { id: "aos", ownerId: "owner", members: { fetch: async () => member } };
   const channels = new Map();
@@ -67,22 +73,29 @@ function fixture(t, options = {}) {
   return { handler, calls, message, send, channel, advance: ms => { time += ms; } };
 }
 
-for (const bot of [false, true]) {
-  test(`${bot ? "bot" : "human"}: 5 messages within 5 seconds trigger a 30-minute timeout and deletion`, async t => {
-    const f = fixture(t, { bot, uncached: true });
+test("human: 5 messages within 5 seconds yield 30-minute timeout", async t => {
+  const f = fixture(t, { bot: false, uncached: true });
+  await f.send(4);
+  assert.equal(f.calls.timeouts.length, 0);
+  f.advance(4_999);
+  await f.send(1);
+  assert.deepEqual(f.calls.timeouts.map(x => x.ms), [1_800_000]);
+  assert.equal(f.calls.deleted.length, 5);
+  assert.equal(f.calls.bans.length, 0);
+});
+for (const admin of [false, true]) {
+  test(`bot with Administrator=${admin}: 5 messages yield ban, not timeout`, async t => {
+    const f = fixture(t, { admin, uncached: true });
     await f.send(4);
-    assert.equal(f.calls.timeouts.length, 0);
-    assert.equal(f.calls.deleted.length, 0);
+    assert.equal(f.calls.bans.length, 0);
     f.advance(4_999);
     await f.send(1);
-    assert.deepEqual(f.calls.timeouts.map(x => x.ms), [1_800_000]);
+    assert.equal(f.calls.bans.length, 1);
+    assert.equal(f.calls.bans[0].deleteMessageSeconds, 0);
+    assert.equal(f.calls.timeouts.length, 0);
     assert.equal(f.calls.deleted.length, 5);
-    assert.equal(f.calls.bans.length, 0);
-    assert.equal(f.calls.kicks.length, 0);
-    assert.match(f.calls.logs[0].description, /таймаут на 30 мин/);
   });
 }
-
 test("4 messages in a 5-second window never trigger a timeout", async t => {
   const f = fixture(t);
   await f.send(4);
@@ -96,7 +109,7 @@ test("messages from the same bot across channels count toward one server-wide li
   const f = fixture(t);
   await f.send(2, { channel: f.channel("first") });
   await f.send(3, { channel: f.channel("second") });
-  assert.equal(f.calls.timeouts.length, 1);
+  assert.equal(f.calls.bans.length, 1);
   assert.equal(new Set(f.calls.deleted).size, 5);
 });
 
@@ -117,26 +130,26 @@ test("different users, whitelist, AoS itself, DMs and other guilds are exempt", 
   assert.equal(separate.calls.timeouts.length, 0);
 });
 
-test("administrator bot is detected, messages removed, and failed timeout is logged", async t => {
-  const f = fixture(t, { bot: true, admin: true });
+test("bot ban fails: kick is used when available", async t => {
+  const f = fixture(t, { bannable: false, kickable: true });
   await f.send(5);
+  assert.equal(f.calls.kicks.length, 1);
   assert.equal(f.calls.timeouts.length, 0);
-  assert.equal(f.calls.deleted.length, 5);
-  assert.match(f.calls.logs[0].description, /Таймаут НЕ выдан/);
-  assert.equal(f.calls.bans.length, 0);
 });
-
-test("timeout API errors are logged honestly and never expose request credentials", async t => {
-  const denied = { code: 50013, requestBody: { token: "SECRET_DO_NOT_LOG" } };
-  const f = fixture(t, { timeoutError: denied, deleteError: denied });
+test("bot with role too high is logged, but spam is deleted", async t => {
+  const f = fixture(t, { bannable: false, kickable: false });
   await f.send(5);
-  assert.equal(f.calls.timeouts.length, 1);
-  assert.equal(f.calls.deleted.length, 0);
-  assert.match(f.calls.logs[0].description, /Таймаут НЕ выдан/);
-  assert.match(f.calls.logs[0].description, /50013/);
-  assert.doesNotMatch(JSON.stringify(f.calls.logs), /SECRET_DO_NOT_LOG|выдан таймаут на/);
+  assert.equal(f.calls.bans.length, 0);
+  assert.equal(f.calls.deleted.length, 5);
+  assert.match(f.calls.logs[0].description, /НЕ остановлен/);
 });
-
+test("failed Discord ban is not logged as successful", async t => {
+  const f = fixture(t, { banError: { code: 50013 } });
+  await f.send(5);
+  assert.equal(f.calls.bans.length, 1);
+  assert.match(f.calls.logs[0].description, /50013/);
+  assert.doesNotMatch(f.calls.logs[0].description, /бот забанен/);
+});
 test("mention flood protections remain operational", async t => {
   const f = fixture(t);
   await f.send(1, { mentions: {
@@ -144,13 +157,13 @@ test("mention flood protections remain operational", async t => {
     roles: new Map([["4", 4], ["5", 5], ["6", 6]]),
     everyone: false
   } });
-  assert.equal(f.calls.timeouts.length, 1);
+  assert.equal(f.calls.bans.length, 1);
   const e = fixture(t);
   const ping = { mentions: { users: new Map(), roles: new Map(), everyone: true } };
   await e.send(1, ping);
   assert.equal(e.calls.timeouts.length, 0);
   await e.send(1, ping);
-  assert.equal(e.calls.timeouts.length, 1);
+  assert.equal(e.calls.bans.length, 1);
 });
 
 test("incoming webhook spam is deleted and its webhook disabled", async t => {
@@ -169,35 +182,35 @@ test("unmanageable incoming webhook is reported and its observed messages cleane
   assert.equal(f.calls.deleted.length, 5);
 });
 
-test("concurrent messages produce only one timeout and include arrivals during API wait", async t => {
+test("concurrent messages produce only one ban and include arrivals during API wait", async t => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
-  const f = fixture(t, { timeoutWait: gate });
+  const f = fixture(t, { banWait: gate });
   await f.send(4);
   const incident = f.handler(f.message());
   const others = [];
   for (let i = 0; i < 40; i++) others.push(f.handler(f.message()));
   await Promise.all(others);
-  assert.equal(f.calls.timeouts.length, 1);
+  assert.equal(f.calls.bans.length, 1);
   release();
   await incident;
   assert.equal(new Set(f.calls.deleted).size, 45);
-  assert.equal(f.calls.timeouts.length, 1);
+  assert.equal(f.calls.bans.length, 1);
 });
 
-test("failed timeouts are retried after cooldown if spam continues", async t => {
-  const f = fixture(t, { timeoutError: { code: 50013 } });
+test("failed bans are retried after cooldown if spam continues", async t => {
+  const f = fixture(t, { banError: { code: 50013 } });
   await f.send(8);
-  assert.equal(f.calls.timeouts.length, 1);
+  assert.equal(f.calls.bans.length, 1);
   f.advance(30_001);
   await f.send(5);
-  assert.equal(f.calls.timeouts.length, 2);
+  assert.equal(f.calls.bans.length, 2);
 });
 
 test("large simultaneous flood is bounded, and overflow is logged", async t => {
   let release;
   const gate = new Promise(resolve => { release = resolve; });
-  const f = fixture(t, { timeoutWait: gate });
+  const f = fixture(t, { banWait: gate });
   await f.send(4);
   const incident = f.handler(f.message());
   await f.send(140);
