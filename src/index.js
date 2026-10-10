@@ -94,13 +94,13 @@ const CONFIG = {
     Number(process.env.RAID_WINDOW_SECONDS || 15) * 1000,
 
   spamMessageLimit:
-    Number(process.env.SPAM_MESSAGE_LIMIT || 8),
+    Number(process.env.SPAM_MESSAGE_LIMIT || 5),
 
   spamWindowMs:
-    Number(process.env.SPAM_WINDOW_SECONDS || 8) * 1000,
+    Number(process.env.SPAM_WINDOW_SECONDS || 5) * 1000,
 
   spamTimeoutMs:
-    Number(process.env.SPAM_TIMEOUT_MINUTES || 5) * 60 * 1000,
+    Number(process.env.SPAM_TIMEOUT_MINUTES || 30) * 60 * 1000,
 
   nukeActionLimit:
     Number(process.env.NUKE_ACTION_LIMIT || 3),
@@ -897,7 +897,8 @@ client.on("interactionCreate", async interaction => {
                   `Verification: **ENABLED ✅**`,
                   `Anti-Spam: **люди / боты / входящие вебхуки ✅**`,
                   `Лимит: **${CONFIG.spamMessageLimit} сообщений за ${CONFIG.spamWindowMs / 1000} сек.**`,
-                  `Бан ботов: ${interaction.guild.members.me?.permissions.has(PermissionFlagsBits.BanMembers) ? "✅ право есть; учитывается порядок ролей" : "❌ нет права Банить участников"}`,
+                  `Мут: **${CONFIG.spamTimeoutMs / 60_000} мин. (люди и боты, где Discord разрешает)**`,
+                  `Право на таймаут: ${interaction.guild.members.me?.permissions.has(PermissionFlagsBits.ModerateMembers) ? "✅; учитывается порядок ролей" : "❌ нет права Модерировать участников"}`,
                   `Удаление в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageMessages) ? "✅" : "❌"}`,
                   `Вебхуки в этом канале: ${interaction.appPermissions?.has(PermissionFlagsBits.ManageWebhooks) ? "✅" : "❌"}`,
                   `Голосования: **/poll и /poll-photo**`,

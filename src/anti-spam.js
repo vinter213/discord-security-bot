@@ -62,36 +62,16 @@ function createAntiSpam({ client, config, isTrusted, log, now = Date.now }) {
     }
     if (!member) return { stopped: false, text: "Участник не найден; удаление сообщений продолжается" };
 
-    if (message.author.bot) {
-      let banFailure = "нет права «Банить участников» или роль AoS не выше роли цели";
-      if (member.bannable) {
-        try {
-          // Clean only the observed spam below; do not purge unrelated historical messages.
-          await member.ban({ reason: "AoS Security Anti-Spam", deleteMessageSeconds: 0 });
-          return { stopped: true, text: "Спамящий бот забанен" };
-        } catch (error) {
-          banFailure = apiError(error);
-        }
-      }
-      if (member.kickable) {
-        try {
-          await member.kick("AoS Security Anti-Spam: ban unavailable");
-          return { stopped: true, text: `Бот исключён без бана. Бан не выполнен: ${banFailure}` };
-        } catch (error) {
-          banFailure += `; исключение: ${apiError(error)}`;
-        }
-      }
-      return { stopped: false, text: `Бот НЕ остановлен: ${banFailure}. Подними роль AoS выше роли этого бота` };
-    }
-
-    // Preserve the existing exemption for human administrators, including uncached members.
-    if (member.permissions.has("Administrator")) return { exempt: true };
+    // Apply the same 30-minute timeout to humans and bots when Discord permits it.
+    // Human administrators retain their existing exemption. Administrator bots
+    // are still detected and their messages cleaned, but Discord blocks their timeout.
+    if (!message.author.bot && member.permissions.has("Administrator")) return { exempt: true };
     if (!member.moderatable) {
-      return { stopped: false, text: "Таймаут НЕ выдан: проверь право «Модерировать участников» и порядок ролей" };
+      return { stopped: false, text: "Таймаут НЕ выдан: Discord не позволяет ограничить этого участника/бота (Administrator, иерархия ролей или нет права «Модерировать участников»)" };
     }
     try {
       await member.timeout(config.spamTimeoutMs, "AoS Security Anti-Spam");
-      return { stopped: true, text: `Участнику выдан таймаут на ${config.spamTimeoutMs / 60_000} мин.` };
+      return { stopped: true, text: `${message.author.bot ? "Боту" : "Участнику"} выдан таймаут на ${config.spamTimeoutMs / 60_000} мин.` };
     } catch (error) {
       return { stopped: false, text: `Таймаут НЕ выдан: ${apiError(error)}` };
     }
