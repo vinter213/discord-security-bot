@@ -607,6 +607,42 @@ client.on("invalidated", () => {
   console.error("[DISCORD INVALIDATED] Discord invalidated the session.");
 });
 
+
+// Inspect Discord REST responses without logging authorization headers or tokens.
+client.rest.on("restDebug", message => {
+  console.log(`[DISCORD REST DEBUG] ${safeDiscordDiagnostic(message)}`);
+});
+
+client.rest.on("response", (request, response) => {
+  console.log(
+    `[DISCORD REST RESPONSE] method=${safeDiscordDiagnostic(request?.method || "unknown")} status=${response?.status ?? "unknown"}`
+  );
+});
+
+// Check whether this Render instance can reach Discord's public API at all.
+setTimeout(async () => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    console.log("[DISCORD API PROBE] Checking https://discord.com/api/v10/gateway");
+    const response = await fetch("https://discord.com/api/v10/gateway", {
+      signal: controller.signal
+    });
+    let gatewayAvailable = false;
+    try {
+      const body = await response.json();
+      gatewayAvailable = typeof body?.url === "string" && body.url.startsWith("wss://");
+    } catch {}
+    console.log(`[DISCORD API PROBE] status=${response.status} gatewayUrl=${gatewayAvailable ? "available" : "missing"}`);
+  } catch (error) {
+    console.error(
+      `[DISCORD API PROBE] failed name=${safeDiscordDiagnostic(error?.name || "Error")} message=${safeDiscordDiagnostic(error?.message || error)}`
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}, 1_000).unref();
+
 setTimeout(() => {
   if (!discordReady) {
     console.error("[DISCORD STARTUP TIMEOUT] Bot has not emitted ready after 30 seconds; inspect the Gateway diagnostics above.");
