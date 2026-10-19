@@ -566,6 +566,54 @@ async function setLockdown(guild, enabled) {
 }
 
 // ============================================================
+// DISCORD GATEWAY DIAGNOSTICS
+// ============================================================
+
+// These logs identify Gateway connection failures without exposing the bot token.
+function safeDiscordDiagnostic(value) {
+  return String(value ?? "")
+    .replace(/\b[\w-]{20,}\.[\w-]{5,}\.[\w-]{20,}\b/g, "[REDACTED]")
+    .replace(/(authorization|token)\s*[:=]\s*\S+/gi, "$1=[REDACTED]")
+    .slice(0, 400);
+}
+
+client.on("debug", message => {
+  if (/(gateway|websocket|shard|identify|heartbeat|session|reconnect|close|fatal|error)/i.test(String(message))) {
+    console.log(`[DISCORD DEBUG] ${safeDiscordDiagnostic(message)}`);
+  }
+});
+
+client.on("warn", message => {
+  console.warn(`[DISCORD WARN] ${safeDiscordDiagnostic(message)}`);
+});
+
+client.on("shardError", (error, shardId) => {
+  console.error(`[DISCORD SHARD ERROR] shard=${shardId} ${safeDiscordDiagnostic(error?.stack || error?.message || error)}`);
+});
+
+client.on("shardDisconnect", (closeEvent, shardId) => {
+  console.error(`[DISCORD SHARD DISCONNECT] shard=${shardId} code=${closeEvent?.code ?? "unknown"} reason=${safeDiscordDiagnostic(closeEvent?.reason || "")}`);
+});
+
+client.on("shardReconnecting", shardId => {
+  console.warn(`[DISCORD SHARD RECONNECTING] shard=${shardId}`);
+});
+
+client.on("shardReady", shardId => {
+  console.log(`[DISCORD SHARD READY] shard=${shardId}`);
+});
+
+client.on("invalidated", () => {
+  console.error("[DISCORD INVALIDATED] Discord invalidated the session.");
+});
+
+setTimeout(() => {
+  if (!discordReady) {
+    console.error("[DISCORD STARTUP TIMEOUT] Bot has not emitted ready after 30 seconds; inspect the Gateway diagnostics above.");
+  }
+}, 30_000).unref();
+
+// ============================================================
 // READY
 // ============================================================
 
